@@ -8,14 +8,17 @@ use sdl2::video::{WindowPos, Window, OPENGL};
 use sdl2::event::{Event};
 use sdl2::surface::{Surface};
 use std::sync::mpsc::{channel, Sender, Receiver};
+#[allow(deprecated)]
 use std::old_io::timer::Timer;
 use std::time::Duration;
 use std::thread;
 use num::complex::Complex64;
+use num::traits::Zero;
 
 static WIDTH: i32 = 800;
 static HEIGHT: i32 = 600;
-static THREADS: i32 = 4;
+static MAX_ITERATIONS: i32 = 100;
+// static THREADS: i32 = 4;
 
 fn main()
 {
@@ -44,12 +47,11 @@ fn main()
         Err(err)    => panic!("Failed to create surface: {}", err)
     };
 
-
     let mut timer = Timer::new().unwrap();
     let periodic = timer.periodic(Duration::milliseconds(50));
 
     let (work_tx, work_rx) = channel::<(i32,i32)>();
-    let (result_tx, result_rx) = channel::<(i32,i32,u8)>();
+    let (result_tx, result_rx) = channel::<(i32,i32,i32)>();
 
     let top_left = Complex64::new(-2f64, 1f64);
     let bottom_right = Complex64::new(1f64, -1f64);
@@ -66,7 +68,12 @@ fn main()
     'event : loop {
         select! {
             res = result_rx.recv() => {
-                let (x, y, c) = res.unwrap();
+                if res.is_err() {
+                    continue;
+                }
+
+                let (x, y, n) = res.unwrap();
+                let c = ((n * 255) / MAX_ITERATIONS) as u8;
                 let offset = (WIDTH * y * 4 + x * 4) as usize;
                 buffer[offset] = c;
                 buffer[offset+1] = c;
@@ -98,15 +105,25 @@ fn generate_work(work: Sender<(i32,i32)>) {
 
 fn spawn_worker(
     work: Receiver<(i32,i32)>, 
-    result : Sender<(i32,i32,u8)>,
+    result : Sender<(i32,i32,i32)>,
     top_left : Complex64,
     bottom_right : Complex64
     ) {
+
     let delta = bottom_right - top_left;
-    let scale = Complex64::new(delta.re / WIDTH as f64, delta.im / HEIGHT as f64);
+
+    let scale = Complex64 { 
+        re: delta.re / WIDTH as f64, 
+        im: delta.im / HEIGHT as f64
+    };
+
     thread::spawn(move || {
         loop {
-            let (x,y) = work.recv().unwrap();
+            let (x,y) = match work.recv() {
+                Ok(res) => res,
+                Err(_) => { println!("Complete"); break },
+            };
+
             let (xf, yf) = (x as f64, y as f64);
             let dot = Complex64::new(
                 scale.re * xf + top_left.re,
@@ -119,16 +136,17 @@ fn spawn_worker(
     });
 }
 
-fn iterate(c : Complex64) -> u8 {
-	let iterations = 100;
-	let mut z = Complex64::new(0f64,0f64);
-
+fn iterate(c : Complex64) -> i32 {
+	let mut z = Complex64::zero();
+	let mut znorm = 0f64;
 	let mut n = 0i32;
-	let mut absz = 0f64;
-	while n < iterations && absz < 4.0 {
+
+	while n < MAX_ITERATIONS && znorm < 4.0 {
 		z = z*z + c;
-		absz = z.norm();
+		znorm = z.norm_sqr();
         n += 1;
 	}
-	((n * 255) / iterations) as u8
+
+    n
 }
+
